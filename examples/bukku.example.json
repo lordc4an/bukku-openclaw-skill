@@ -1,0 +1,8 @@
+{
+  "baseUrl": "https://api.bukku.my",
+  "headers": {
+    "Authorization": "Bearer <BukkuApiSecretKey>",
+    "Company-Subdomain": "<company-subdomain>",
+    "Accept": "application/json"
+  }
+}

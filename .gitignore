@@ -1,0 +1,8 @@
+.DS_Store
+*.log
+*.tmp
+.secrets/
+**/.secrets/
+bukku.json
+*.env
+node_modules/
