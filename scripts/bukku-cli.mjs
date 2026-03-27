@@ -29,6 +29,16 @@ function usage() {
   node bukku-cli.mjs get-contact <id>
   node bukku-cli.mjs create-contact --body-file <file>
   node bukku-cli.mjs create-contact --body-json '<json>'
+  node bukku-cli.mjs list-products [--query '<query-string>']
+  node bukku-cli.mjs find-product <query>
+  node bukku-cli.mjs resolve-product <query>
+  node bukku-cli.mjs get-product <id>
+  node bukku-cli.mjs create-product --body-file <file>
+  node bukku-cli.mjs create-product --body-json '<json>'
+  node bukku-cli.mjs update-product <id> --body-file <file>
+  node bukku-cli.mjs update-product <id> --body-json '<json>'
+  node bukku-cli.mjs quote-from-product <contact-id-or-query> <product-id-or-query> --quantity <qty> [--date YYYY-MM-DD] [--title <text>] [--description <text>] [--remarks <text>] [--unit-price <price>] [--status draft|pending_approval|ready] [--commit]
+  node bukku-cli.mjs invoice-from-product <contact-id-or-query> <product-id-or-query> --quantity <qty> [--date YYYY-MM-DD] [--title <text>] [--description <text>] [--remarks <text>] [--unit-price <price>] [--payment-mode credit|cash] [--status draft|pending_approval|ready] [--commit]
   node bukku-cli.mjs customer-ledger <contact-id-or-query>
   node bukku-cli.mjs list-quotes [--query '<query-string>']
   node bukku-cli.mjs get-quote <id-or-number>
@@ -106,6 +116,113 @@ function pickFields(source, keys) {
     if (source[key] !== undefined && source[key] !== null) out[key] = source[key];
   }
   return out;
+}
+
+const DEFAULT_CURRENCY_CODE = 'MYR';
+const DEFAULT_EXCHANGE_RATE = 1;
+const DEFAULT_SALES_TAX_MODE = 'exclusive';
+const DEFAULT_QUOTE_STATUS = 'ready';
+const DEFAULT_SALES_ACCOUNT_ID = 20;
+
+function normalizeStatus(value, fallback) {
+  const raw = String(value || fallback || '').trim().toLowerCase();
+  if (raw === 'draft' || raw === 'pending_approval' || raw === 'ready') return raw;
+  if (raw === 'approved' || raw === 'pending-approval') return 'pending_approval';
+  if (raw === 'done' || raw === 'published') return 'ready';
+  return fallback;
+}
+
+function normalizeTaxMode(value, fallback = DEFAULT_SALES_TAX_MODE) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (!raw) return fallback;
+  if (raw === 'inclusive' || raw === 'exclusive') return raw;
+  if (raw === 'no_tax' || raw === 'none' || raw === 'no tax') return fallback;
+  return fallback;
+}
+
+function normalizeEntityType(value) {
+  const raw = String(value || '').trim().toUpperCase();
+  if (!raw) return 'MALAYSIAN_INDIVIDUAL';
+  const map = {
+    INDIVIDUAL: 'MALAYSIAN_INDIVIDUAL',
+    PERSON: 'MALAYSIAN_INDIVIDUAL',
+    MALAYSIAN_INDIVIDUAL: 'MALAYSIAN_INDIVIDUAL',
+    COMPANY: 'MALAYSIAN_COMPANY',
+    BUSINESS: 'MALAYSIAN_COMPANY',
+    ORGANISATION: 'MALAYSIAN_COMPANY',
+    ORGANIZATION: 'MALAYSIAN_COMPANY',
+    MALAYSIAN_COMPANY: 'MALAYSIAN_COMPANY',
+  };
+  return map[raw] || raw;
+}
+
+function normalizeContactTypes(value) {
+  if (Array.isArray(value) && value.length) return value;
+  if (typeof value === 'string' && value.trim()) return [value.trim()];
+  return ['customer'];
+}
+
+function normalizeContactCreateBody(body) {
+  return {
+    ...body,
+    entity_type: normalizeEntityType(body.entity_type),
+    types: normalizeContactTypes(body.types),
+  };
+}
+
+function normalizeFormItemForCreate(item) {
+  const mapped = {
+    ...item,
+  };
+  if (mapped.tax_id !== undefined && mapped.tax_code_id === undefined) {
+    mapped.tax_code_id = mapped.tax_id;
+  }
+  delete mapped.tax_id;
+  return mapped;
+}
+
+function normalizeInvoiceBody(body) {
+  const normalized = {
+    ...body,
+    currency_code: body.currency_code || DEFAULT_CURRENCY_CODE,
+    exchange_rate: body.exchange_rate ?? DEFAULT_EXCHANGE_RATE,
+    tax_mode: normalizeTaxMode(body.tax_mode),
+    status: normalizeStatus(body.status, 'ready'),
+  };
+
+  normalized.form_items = Array.isArray(body.form_items)
+    ? body.form_items.map(normalizeFormItemForCreate)
+    : [];
+
+  if (normalized.term_items && !normalized.term_id) {
+    const firstTermId = normalized.term_items.find(item => item?.term_id)?.term_id;
+    if (firstTermId) normalized.term_id = firstTermId;
+  }
+
+  return normalized;
+}
+
+function normalizeQuoteBody(body) {
+  return {
+    ...normalizeInvoiceBody(body),
+    status: normalizeStatus(body.status, DEFAULT_QUOTE_STATUS),
+  };
+}
+
+function normalizeProductBody(body) {
+  const normalized = { ...body };
+  if (!normalized.type) normalized.type = 'product';
+  if (normalized.is_selling === undefined) normalized.is_selling = true;
+  if (normalized.is_buying === undefined) normalized.is_buying = false;
+  if (normalized.track_inventory === undefined) normalized.track_inventory = false;
+
+  for (const key of ['sale_price', 'purchase_price', 'quantity', 'quantity_low_alert']) {
+    if (normalized[key] !== undefined && normalized[key] !== null && normalized[key] !== '') {
+      normalized[key] = Number(normalized[key]);
+    }
+  }
+
+  return normalized;
 }
 
 async function listTransactions(path, query = '') {
@@ -255,8 +372,396 @@ async function getContact(id) {
 }
 
 async function createContact(body) {
-  const data = await bukkuPost('/contacts', body);
+  const data = await bukkuPost('/contacts', normalizeContactCreateBody(body));
   print(unwrapRecord(data, ['contact']));
+}
+
+async function listProducts(query = '') {
+  const data = await bukkuGet(`/products${query || ''}`);
+  const products = data.products || [];
+  print({
+    paging: data.paging || null,
+    count: products.length,
+    products,
+  });
+}
+
+async function findProduct(query) {
+  const data = await bukkuGet(`/products?search=${encodeURIComponent(query)}&page_size=50`);
+  const products = data.products || [];
+  print({
+    query,
+    count: products.length,
+    products,
+  });
+}
+
+async function getProduct(id) {
+  const data = await bukkuGet(`/products/${id}`);
+  print(unwrapRecord(data, ['product']));
+}
+
+async function resolveProductCommand(query) {
+  const resolved = await resolveProductCandidates(query, true);
+  if (resolved.kind === 'match') {
+    const detail = await bukkuGet(`/products/${resolved.product.id}`);
+    print({
+      kind: 'match',
+      query,
+      score: resolved.score,
+      candidates: resolved.candidates,
+      product: unwrapRecord(detail, ['product']),
+    });
+    return;
+  }
+
+  print({
+    kind: resolved.kind,
+    query,
+    candidates: resolved.candidates || [],
+  });
+}
+
+async function createProduct(body) {
+  const data = await bukkuPost('/products', normalizeProductBody(body));
+  print(unwrapRecord(data, ['product']));
+}
+
+async function updateProduct(id, body) {
+  const data = await bukkuPut(`/products/${id}`, normalizeProductBody(body));
+  print(unwrapRecord(data, ['product']));
+}
+
+function normalizeProductText(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/mirrorkote/g, 'mirrorkot')
+    .replace(/art\s*card/g, 'artcard')
+    .replace(/art\s*paper/g, 'artpaper')
+    .replace(/white\s*pp/g, 'whitepp')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\b(cm|mm|ft|feet|inci|inch|x)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function tokenizeProductText(value) {
+  return normalizeProductText(value)
+    .split(' ')
+    .map(token => token.trim())
+    .filter(token => token.length >= 2);
+}
+
+function scoreProductMatch(query, product) {
+  const wanted = normalizeProductText(query);
+  const name = normalizeProductText(product.name);
+  if (!wanted || !name) return -1;
+
+  let score = 0;
+  if (name === wanted) score += 1000;
+  if (name.startsWith(wanted)) score += 300;
+  if (wanted.startsWith(name)) score += 220;
+  if (name.includes(wanted)) score += 160;
+  if (wanted.includes(name)) score += 140;
+
+  const wantedTokens = tokenizeProductText(wanted);
+  const nameTokens = tokenizeProductText(name);
+  const nameSet = new Set(nameTokens);
+
+  for (const token of wantedTokens) {
+    if (nameSet.has(token)) {
+      score += 45;
+      continue;
+    }
+    const prefixMatch = nameTokens.find(nameToken => nameToken.startsWith(token) || token.startsWith(nameToken));
+    if (prefixMatch) score += 18;
+  }
+
+  if (wanted.includes('sticker') && name.includes('sticker')) score += 60;
+  if (wanted.includes('banner') && name.includes('banner')) score += 60;
+  if (wanted.includes('stamp') && name.includes('stamp')) score += 60;
+
+  if (product.sale_price != null) score += 5;
+  return score;
+}
+
+async function fetchProductCandidates(query) {
+  const data = await bukkuGet(`/products?search=${encodeURIComponent(query)}&page_size=50`);
+  const products = data.products || [];
+  if (products.length > 0) return products;
+
+  const all = await bukkuGet('/products?page_size=100');
+  return all.products || [];
+}
+
+function buildProductCandidateSummary(ranked, limit = 5) {
+  return ranked.slice(0, limit).map(({ product, score }) => ({
+    id: product.id,
+    name: product.name,
+    sale_price: product.sale_price,
+    score,
+  }));
+}
+
+function evaluateRankedProductMatch(query, ranked, strict = true) {
+  const best = ranked[0];
+  if (!best) return { kind: 'none' };
+
+  const second = ranked[1];
+  const topCandidates = buildProductCandidateSummary(ranked);
+  const tokens = tokenizeProductText(query);
+  const genericSingleToken = tokens.length === 1 && ['sticker', 'banner', 'stamp', 'rubber', 'colop'].includes(tokens[0]);
+
+  if (best.score < 40) {
+    return { kind: 'none', candidates: topCandidates };
+  }
+
+  if (strict && genericSingleToken) {
+    return {
+      kind: 'ambiguous',
+      query,
+      candidates: topCandidates,
+    };
+  }
+
+  const highlyConfident = best.score >= 220;
+  const clearGap = !second || best.score - second.score >= 35;
+
+  if (!strict || highlyConfident || clearGap) {
+    return { kind: 'match', product: best.product, score: best.score, candidates: topCandidates };
+  }
+
+  return {
+    kind: 'ambiguous',
+    query,
+    candidates: topCandidates,
+  };
+}
+
+async function resolveProductCandidates(query, strict = true) {
+  const products = await fetchProductCandidates(query);
+  if (products.length === 0) {
+    return {
+      kind: 'none',
+      query,
+      candidates: [],
+    };
+  }
+
+  const ranked = products
+    .map(product => ({ product, score: scoreProductMatch(query, product) }))
+    .sort((a, b) => b.score - a.score);
+
+  return evaluateRankedProductMatch(query, ranked, strict);
+}
+
+async function resolveProduct(input) {
+  if (/^\d+$/.test(input)) {
+    const data = await bukkuGet(`/products/${input}`);
+    return unwrapRecord(data, ['product']);
+  }
+
+  const resolved = await resolveProductCandidates(input, true);
+  if (resolved.kind === 'none') die(`Product not found: ${input}`, { query: input, candidates: resolved.candidates || [] });
+  if (resolved.kind === 'ambiguous') die(`Product match is ambiguous: ${input}`, resolved);
+
+  const detail = await bukkuGet(`/products/${resolved.product.id}`);
+  return unwrapRecord(detail, ['product']);
+}
+
+async function resolveProductByDescription(description) {
+  const query = String(description || '').trim();
+  if (!query) return null;
+
+  const resolved = await resolveProductCandidates(query, true);
+  if (resolved.kind === 'none') return null;
+  if (resolved.kind === 'ambiguous') return resolved;
+
+  const detail = await bukkuGet(`/products/${resolved.product.id}`);
+  return unwrapRecord(detail, ['product']);
+}
+
+function pickProductUnit(product) {
+  const units = Array.isArray(product.units) ? product.units : [];
+  return (
+    units.find((unit) => unit.is_sale_default) ||
+    units.find((unit) => unit.is_base) ||
+    units[0] ||
+    null
+  );
+}
+
+function toNumber(value, label) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) die(`Invalid ${label}`);
+  return number;
+}
+
+function buildProductFormItem(product, args) {
+  const unit = pickProductUnit(product);
+  const quantity = toNumber(readOption(args, '--quantity'), '--quantity');
+  const explicitUnitPrice = readOption(args, '--unit-price', null);
+  const defaultUnitPrice =
+    unit?.sale_price ??
+    product.sale_prices?.[0]?.price ??
+    product.sale_price ??
+    null;
+  const unitPrice = explicitUnitPrice !== null ? toNumber(explicitUnitPrice, '--unit-price') : Number(defaultUnitPrice);
+
+  if (!Number.isFinite(unitPrice)) {
+    die(`Product ${product.name} has no sale price; pass --unit-price explicitly`);
+  }
+
+  return {
+    account_id: Number(product.sale_account_id || DEFAULT_SALES_ACCOUNT_ID),
+    description: readOption(args, '--line-description', product.sale_description || product.name),
+    product_id: product.id,
+    ...(unit?.id ? { product_unit_id: unit.id } : {}),
+    quantity,
+    unit_price: unitPrice,
+    ...(product.sale_tax_code_id ? { tax_code_id: Number(product.sale_tax_code_id) } : {}),
+    ...(product.classification_code ? { classification_code: product.classification_code } : {}),
+  };
+}
+
+async function enrichFormItemsWithProducts(items) {
+  const enriched = [];
+
+  for (const item of items || []) {
+    const normalized = normalizeFormItemForCreate(item);
+    const hasStructuredProduct = normalized.product_id || normalized.type === 'subtotal' || normalized.type === 'subtitle' || normalized.type === 'bundle';
+    if (hasStructuredProduct) {
+      if (!normalized.account_id && normalized.type == null) {
+        normalized.account_id = DEFAULT_SALES_ACCOUNT_ID;
+      }
+      enriched.push(normalized);
+      continue;
+    }
+
+    const product = await resolveProductByDescription(normalized.description);
+    if (!product) {
+      if (!normalized.account_id && normalized.type == null) {
+        normalized.account_id = DEFAULT_SALES_ACCOUNT_ID;
+      }
+      enriched.push(normalized);
+      continue;
+    }
+    if (product.kind === 'ambiguous') {
+      const err = new Error(`Product match is ambiguous for line item: ${normalized.description}`);
+      err.payload = {
+        query: normalized.description,
+        candidates: product.candidates,
+      };
+      throw err;
+    }
+
+    const unit = pickProductUnit(product);
+    enriched.push({
+      ...normalized,
+      account_id: Number(normalized.account_id || product.sale_account_id || DEFAULT_SALES_ACCOUNT_ID),
+      description: normalized.description || product.sale_description || product.name,
+      product_id: normalized.product_id || product.id,
+      ...(normalized.product_unit_id || unit?.id ? { product_unit_id: normalized.product_unit_id || unit.id } : {}),
+      ...(normalized.tax_code_id || product.sale_tax_code_id ? { tax_code_id: Number(normalized.tax_code_id || product.sale_tax_code_id) } : {}),
+      ...(normalized.classification_code || product.classification_code ? { classification_code: normalized.classification_code || product.classification_code } : {}),
+      ...(normalized.unit_price !== undefined && normalized.unit_price !== null
+        ? {}
+        : { unit_price: unit?.sale_price ?? product.sale_price ?? normalized.unit_price }),
+    });
+  }
+
+  return enriched;
+}
+
+async function prepareQuoteBody(body) {
+  const normalized = normalizeQuoteBody(body);
+  normalized.form_items = await enrichFormItemsWithProducts(normalized.form_items);
+  return normalized;
+}
+
+async function prepareInvoiceBody(body) {
+  const normalized = normalizeInvoiceBody(body);
+  normalized.form_items = await enrichFormItemsWithProducts(normalized.form_items);
+  return normalized;
+}
+
+function buildProductTransactionBody(kind, contact, product, args) {
+  const formItem = buildProductFormItem(product, args);
+  const productLabel = product.name || `Product ${product.id}`;
+  const base = {
+    contact_id: contact.id,
+    date: readOption(args, '--date', new Date().toISOString().slice(0, 10)),
+    currency_code: DEFAULT_CURRENCY_CODE,
+    exchange_rate: DEFAULT_EXCHANGE_RATE,
+    billing_party: contact.billing_party || undefined,
+    title: readOption(args, '--title', productLabel),
+    description: readOption(args, '--description', product.sale_description || productLabel),
+    remarks: readOption(args, '--remarks', undefined),
+    tax_mode: normalizeTaxMode(readOption(args, '--tax-mode', product.sale_tax_code_id ? 'exclusive' : DEFAULT_SALES_TAX_MODE)),
+    status: normalizeStatus(readOption(args, '--status', kind === 'quote' ? DEFAULT_QUOTE_STATUS : 'ready'), kind === 'quote' ? DEFAULT_QUOTE_STATUS : 'ready'),
+    form_items: [formItem],
+  };
+
+  if (kind === 'invoice') {
+    return {
+      payment_mode: readOption(args, '--payment-mode', 'credit'),
+      ...base,
+    };
+  }
+
+  return base;
+}
+
+async function quoteFromProduct(contactInput, productInput, args) {
+  const [contact, product] = await Promise.all([
+    resolveContact(contactInput),
+    resolveProduct(productInput),
+  ]);
+  const body = buildProductTransactionBody('quote', contact, product, args);
+
+  if (readFlag(args, '--commit')) {
+    const data = await bukkuPost('/sales/quotes', await prepareQuoteBody(body));
+    print({
+      mode: 'created',
+      contact: { id: contact.id, name: contact.display_name || contact.legal_name },
+      product: { id: product.id, name: product.name },
+      transaction: unwrapRecord(data, ['transaction']),
+    });
+    return;
+  }
+
+  print({
+    mode: 'draft',
+    contact: { id: contact.id, name: contact.display_name || contact.legal_name },
+    product: { id: product.id, name: product.name },
+    body: await prepareQuoteBody(body),
+  });
+}
+
+async function invoiceFromProduct(contactInput, productInput, args) {
+  const [contact, product] = await Promise.all([
+    resolveContact(contactInput),
+    resolveProduct(productInput),
+  ]);
+  const body = buildProductTransactionBody('invoice', contact, product, args);
+
+  if (readFlag(args, '--commit')) {
+    const data = await bukkuPost('/sales/invoices', await prepareInvoiceBody(body));
+    print({
+      mode: 'created',
+      contact: { id: contact.id, name: contact.display_name || contact.legal_name },
+      product: { id: product.id, name: product.name },
+      transaction: unwrapRecord(data, ['transaction']),
+    });
+    return;
+  }
+
+  print({
+    mode: 'draft',
+    contact: { id: contact.id, name: contact.display_name || contact.legal_name },
+    product: { id: product.id, name: product.name },
+    body: await prepareInvoiceBody(body),
+  });
 }
 
 async function getInvoice(idOrNumber) {
@@ -647,22 +1152,22 @@ async function recordPaymentSafe(idOrNumber, args) {
 }
 
 async function createQuote(body) {
-  const data = await bukkuPost('/sales/quotes', body);
+  const data = await bukkuPost('/sales/quotes', await prepareQuoteBody(body));
   print(unwrapRecord(data, ['transaction']));
 }
 
 async function updateQuote(id, body) {
-  const data = await bukkuPut(`/sales/quotes/${id}`, body);
+  const data = await bukkuPut(`/sales/quotes/${id}`, await prepareQuoteBody(body));
   print(unwrapRecord(data, ['transaction']));
 }
 
 async function createInvoice(body) {
-  const data = await bukkuPost('/sales/invoices', body);
+  const data = await bukkuPost('/sales/invoices', await prepareInvoiceBody(body));
   print(unwrapRecord(data, ['transaction']));
 }
 
 async function updateInvoice(id, body) {
-  const data = await bukkuPut(`/sales/invoices/${id}`, body);
+  const data = await bukkuPut(`/sales/invoices/${id}`, await prepareInvoiceBody(body));
   print(unwrapRecord(data, ['transaction']));
 }
 
@@ -723,6 +1228,64 @@ async function main() {
       const body = readBodyArg(rest);
       if (!body) usage();
       await createContact(body);
+      return;
+    }
+
+    if (command === 'list-products') {
+      await listProducts(readQueryArg(rest, '?page_size=30'));
+      return;
+    }
+
+    if (command === 'find-product') {
+      const query = rest[0];
+      if (!query) usage();
+      await findProduct(query);
+      return;
+    }
+
+    if (command === 'resolve-product') {
+      const query = rest[0];
+      if (!query) usage();
+      await resolveProductCommand(query);
+      return;
+    }
+
+    if (command === 'get-product') {
+      const id = rest[0];
+      if (!id) usage();
+      await getProduct(id);
+      return;
+    }
+
+    if (command === 'create-product') {
+      const body = readBodyArg(rest);
+      if (!body) usage();
+      await createProduct(body);
+      return;
+    }
+
+    if (command === 'update-product') {
+      const id = rest[0];
+      if (!id) usage();
+      const body = readBodyArg(rest.slice(1));
+      if (!body) usage();
+      await updateProduct(id, body);
+      return;
+    }
+
+    if (command === 'quote-from-product') {
+      const contactInput = rest[0];
+      const productInput = rest[1];
+      if (!contactInput || !productInput) usage();
+      await quoteFromProduct(contactInput, productInput, rest.slice(2));
+      return;
+    }
+
+    if (command === 'invoice-from-product') {
+      const contactInput = rest[0];
+      const productInput = rest[1];
+      if (!contactInput || !productInput) usage();
+      await invoiceFromProduct(contactInput, productInput, rest.slice(2));
       return;
     }
 

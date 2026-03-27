@@ -10,6 +10,7 @@ metadata:
 Use this skill for Bukku operational work in OpenClaw:
 
 - contact lookup and creation
+- product lookup and management
 - quotation lookup and creation
 - invoice lookup, update, and payment status
 - delivery order lookup and creation
@@ -43,6 +44,7 @@ It then writes the Bukku secret config and installs the scripts into the target 
 - For payment creation, prefer `record-payment-safe` or `mark-payment-from-invoice` style workflows that require explicit confirmation before commit.
 - Do not perform delete, void, or refund actions unless a human explicitly extends the bundle for those actions.
 - For ambiguous payment matching, show candidates and ask for approval first.
+- For ambiguous product matching, use `resolve-product` first and only create the quote/invoice after the product choice is clear.
 
 ## Core commands
 
@@ -52,10 +54,20 @@ Contacts:
 - `node ./scripts/bukku-cli.mjs get-contact <id>`
 - `node ./scripts/bukku-cli.mjs create-contact --body-json '<json>'`
 
+Products:
+
+- `node ./scripts/bukku-cli.mjs list-products --query 'page_size=10'`
+- `node ./scripts/bukku-cli.mjs find-product "<query>"`
+- `node ./scripts/bukku-cli.mjs resolve-product "<query>"`
+- `node ./scripts/bukku-cli.mjs get-product <id>`
+- `node ./scripts/bukku-cli.mjs create-product --body-json '<json>'`
+- `node ./scripts/bukku-cli.mjs update-product <id> --body-json '<json>'`
+
 Quotes:
 
 - `node ./scripts/bukku-cli.mjs list-quotes --query 'page_size=10'`
 - `node ./scripts/bukku-cli.mjs get-quote <id-or-number>`
+- `node ./scripts/bukku-cli.mjs quote-from-product "<contact>" "<product>" --quantity <qty>`
 - `node ./scripts/bukku-cli.mjs create-quote --body-file /tmp/quote.json`
 - `node ./scripts/bukku-cli.mjs update-quote <id> --body-file /tmp/quote-update.json`
 - `node ./scripts/bukku-cli.mjs quote-to-invoice <quote-id-or-number>`
@@ -65,6 +77,7 @@ Invoices:
 - `node ./scripts/bukku-cli.mjs list-invoices --query 'page_size=10'`
 - `node ./scripts/bukku-cli.mjs get-invoice <id-or-number>`
 - `node ./scripts/bukku-cli.mjs payment-status <id-or-number>`
+- `node ./scripts/bukku-cli.mjs invoice-from-product "<contact>" "<product>" --quantity <qty>`
 - `node ./scripts/bukku-cli.mjs create-invoice --body-file /tmp/invoice.json`
 - `node ./scripts/bukku-cli.mjs update-invoice <id> --body-file /tmp/invoice-update.json`
 - `node ./scripts/bukku-cli.mjs invoice-to-delivery-order <invoice-id-or-number>`

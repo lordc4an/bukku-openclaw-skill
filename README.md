@@ -2,6 +2,8 @@
 
 Bukku accounting operations bundle for OpenClaw.
 
+Current bundle version: `v2026.03.27`
+
 This bundle includes:
 
 - `skills/bukku-ops/SKILL.md`
@@ -15,6 +17,7 @@ This bundle includes:
 The skill helps OpenClaw agents work with Bukku for:
 
 - contacts
+- products
 - quotations
 - invoices
 - delivery orders
@@ -23,6 +26,24 @@ The skill helps OpenClaw agents work with Bukku for:
 - customer ledger
 - aging analysis
 - safe payment recording
+
+## Latest update
+
+`v2026.03.27` includes:
+
+- fixed Bukku quote creation defaults and live tenant mappings
+- added product commands:
+  - `list-products`
+  - `find-product`
+  - `resolve-product`
+  - `get-product`
+  - `create-product`
+  - `update-product`
+- added product-backed document helpers:
+  - `quote-from-product`
+  - `invoice-from-product`
+- added automatic product enrichment for `create-quote` and `create-invoice`
+- added fuzzy product matching with ambiguity guard and candidate shortlist output
 
 ## Install
 
