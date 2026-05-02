@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   bukkuGet,
   bukkuPost,
@@ -8,6 +10,36 @@ import {
   parseJsonArg,
   unwrapRecord,
 } from './_bukku.js';
+
+const CACHE_TTL_MS = 5 * 60 * 1000;
+const CACHE_FILE = join(tmpdir(), 'bukku-cli-cache.json');
+
+function cacheGet(key) {
+  try {
+    if (!existsSync(CACHE_FILE)) return null;
+    const cache = JSON.parse(readFileSync(CACHE_FILE, 'utf8'));
+    const entry = cache[key];
+    if (!entry || Date.now() - entry.ts > CACHE_TTL_MS) return null;
+    return entry.data;
+  } catch {
+    return null;
+  }
+}
+
+function cacheSet(key, data) {
+  try {
+    let cache = {};
+    if (existsSync(CACHE_FILE)) {
+      try { cache = JSON.parse(readFileSync(CACHE_FILE, 'utf8')); } catch {}
+    }
+    const now = Date.now();
+    for (const k of Object.keys(cache)) {
+      if (now - cache[k].ts > CACHE_TTL_MS) delete cache[k];
+    }
+    cache[key] = { ts: now, data };
+    writeFileSync(CACHE_FILE, JSON.stringify(cache));
+  } catch {}
+}
 
 function die(message, extra) {
   if (extra !== undefined) {
@@ -357,13 +389,14 @@ async function fetchAllPayments(query = '') {
 }
 
 async function findContact(query) {
+  const key = `contact:${query.toLowerCase()}`;
+  const cached = cacheGet(key);
+  if (cached) { print(cached); return; }
   const data = await bukkuGet(`/contacts?search=${encodeURIComponent(query)}&page_size=50`);
   const contacts = data.contacts || [];
-  print({
-    query,
-    count: contacts.length,
-    contacts,
-  });
+  const result = { query, count: contacts.length, contacts };
+  cacheSet(key, result);
+  print(result);
 }
 
 async function getContact(id) {
@@ -387,13 +420,14 @@ async function listProducts(query = '') {
 }
 
 async function findProduct(query) {
+  const key = `product:${query.toLowerCase()}`;
+  const cached = cacheGet(key);
+  if (cached) { print(cached); return; }
   const data = await bukkuGet(`/products?search=${encodeURIComponent(query)}&page_size=50`);
   const products = data.products || [];
-  print({
-    query,
-    count: products.length,
-    products,
-  });
+  const result = { query, count: products.length, products };
+  cacheSet(key, result);
+  print(result);
 }
 
 async function getProduct(id) {
@@ -486,12 +520,21 @@ function scoreProductMatch(query, product) {
 }
 
 async function fetchProductCandidates(query) {
+  const key = `product-candidates:${query.toLowerCase()}`;
+  const cached = cacheGet(key);
+  if (cached) return cached;
+
   const data = await bukkuGet(`/products?search=${encodeURIComponent(query)}&page_size=50`);
   const products = data.products || [];
-  if (products.length > 0) return products;
+  if (products.length > 0) {
+    cacheSet(key, products);
+    return products;
+  }
 
   const all = await bukkuGet('/products?page_size=100');
-  return all.products || [];
+  const allProducts = all.products || [];
+  cacheSet(key, allProducts);
+  return allProducts;
 }
 
 function buildProductCandidateSummary(ranked, limit = 5) {

@@ -43,8 +43,19 @@ It then writes the Bukku secret config and installs the scripts into the target 
 - Prefer the Bukku CLI over ad-hoc API reasoning.
 - For payment creation, prefer `record-payment-safe` or `mark-payment-from-invoice` style workflows that require explicit confirmation before commit.
 - Do not perform delete, void, or refund actions unless a human explicitly extends the bundle for those actions.
-- For ambiguous payment matching, show candidates and ask for approval first.
 - For ambiguous product matching, use `resolve-product` first and only create the quote/invoice after the product choice is clear.
+
+### Payment matching heuristics
+
+When matching an incoming payment receipt to an invoice:
+
+1. Run `top-outstanding` to get current overdue invoices.
+2. Filter candidates by amount matching the receipt amount exactly.
+3. **If exactly one candidate matches** → proceed directly with `record-payment-safe` without asking for clarification.
+4. **If multiple candidates match** → rank by earliest due date first. Present the ranked shortlist and highlight the top candidate. Ask user to confirm before applying.
+5. **If zero candidates match** → report no match found and return the full outstanding list for manual selection.
+
+This avoids unnecessary clarification turns in the common case where only one invoice is outstanding for that amount.
 
 ## Core commands
 
